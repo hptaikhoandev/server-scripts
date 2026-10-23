@@ -239,9 +239,19 @@ global_pre() {
   fi
 
   say "== File của user website trong /tmp /var/tmp /dev/shm"
+  # sc_<hex>.lock / sc_XXXXXX = khoá & file tạm của backdoor họ "sc_"; phpXXXXXX cũ = file upload PHP bỏ dở (có thể do khai thác)
+  local tq="$LSWS/_quarantine_$TS/_tmp" tf n=0
   for u in "${!SU[@]}"; do
-    find /tmp /var/tmp /dev/shm -maxdepth 2 -user "$u" 2>/dev/null | head -20 | sed 's/^/  [TMP] /' | tee -a "$LOG"
+    while IFS= read -r tf; do
+      b=${tf##*/}
+      if [[ $b =~ ^sc_ ]] || { [[ $b =~ ^php[A-Za-z0-9]{6}$ ]] && [ -n "$(find "$tf" -maxdepth 0 -mmin +60 2>/dev/null)" ]; }; then
+        if isfix; then mkdir -p "$tq"; mv -f "$tf" "$tq/" 2>/dev/null && n=$((n+1)); else say "  [TMP] $tf  ($(stat -c '%y' "$tf" | cut -c1-16), user $u)"; fi
+      else say "  [TMP] $tf  ($(stat -c '%y' "$tf" | cut -c1-16), user $u)"; fi
+    done < <(find /tmp /var/tmp /dev/shm -maxdepth 1 -user "$u" ! -name 'wordpress-*-no-content-*' 2>/dev/null)
   done
+  [ $n -gt 0 ] && say "  -> đã cách ly $n file tạm của mã độc (sc_*, php* bỏ dở) vào $tq"
+  local last; last=$(ls -t /tmp/sc_*.lock "$tq"/sc_*.lock 2>/dev/null | head -1)
+  [ -n "$last" ] && say "  Lần gần nhất backdoor 'sc_' chạy (file khoá mới nhất): $(stat -c '%y' "$last" | cut -c1-19)"
 
   say "== Chặn máy chủ C2 trong /etc/hosts"
   for h in "${C2_HOSTS[@]}"; do
@@ -265,6 +275,7 @@ global_pre() {
 
 # ---------------------------------------------------------------- quét backdoor (dùng 2 lần: trong lúc dọn và sau khi restart PHP)
 DROPINS=" advanced-cache.php object-cache.php db.php db-error.php install.php maintenance.php sunrise.php blog-deleted.php blog-inactive.php blog-suspended.php fatal-error-handler.php php-error.php index.php "
+DROPIN_LEGIT='WP Rocket|WP_ROCKET|LiteSpeed|LSCWP|W3 ?Total|W3TC|Query Monitor|QM_DB|WP Super Cache|wpsc|Cache Enabler|Breeze|SiteGround|Hummingbird|WP Fastest|Swift Performance|Comet Cache|HyperDB|LudicrousDB|redis|memcache|Docket|Object Cache Pro|Atec'
 sweep_backdoors() {
   local WC=$1 f d b rel
   # 3a) Drop-in trong wp-content/ (db.php, object-cache.php...) — được nạp TRƯỚC mọi plugin,
@@ -274,6 +285,10 @@ sweep_backdoors() {
     if grep -qE "$SIG_BACKDOOR|$SIG_INJECT|$SIG_OBF|function[[:space:]]+ego[[:space:]]*\(" "$f" 2>/dev/null \
        || { [ "$(stat -c %Y "$f")" -ge "$CUTOFF" ] && grep -qE "$SIG_WEAK" "$f"; }; then
       qmove drop-in-doc "$f"
+    elif grep -qE 'wpanel|class-wp-locale-(data|switch)|_wp_locale_pack|wp-locale-cache|\.wp-object-cache-|\.sc_|\.oc_' "$f" 2>/dev/null \
+         || { [[ " db.php advanced-cache.php object-cache.php " == *" $b "* ]] && [ "$(stat -c %s "$f")" -lt 2000 ] \
+              && ! grep -qiE "$DROPIN_LEGIT" "$f" 2>/dev/null; }; then
+      qmove drop-in-doc "$f"                               # drop-in giả cỡ nhỏ (vd 408/496 byte) nạp wpanel / backdoor "sc_"
     elif grep -qE "$SIG_WEAK" "$f" 2>/dev/null; then
       review "drop-in cũ có base64/eval, cần xem: ${f#"$LSWS"/}"
     elif [ "$b" != index.php ] && [ "$(stat -c %Y "$f")" -ge "$CUTOFF" ] && grep -qE '(include|require)(_once)?' "$f" \
@@ -282,6 +297,10 @@ sweep_backdoors() {
     elif [[ $DROPINS != *" $b "* ]]; then
       review "file PHP lạ trong wp-content/: ${f#"$LSWS"/}"
     fi
+  done
+  # 3a2) Zip tên hex 8 ký tự trong uploads/YYYY/MM chứa PHP (gói backdoor index-importer-pad)
+  for f in "$WC"/uploads/20*/*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].zip; do
+    [ -f "$f" ] && unzip -l "$f" 2>/dev/null | grep -qE 'index-importer-pad|\.php$' && qmove goi-ma-doc "$f"
   done
   # 3b) Thư mục / file ẩn của backdoor
   while IFS= read -r -d '' f; do qmove ban-sao-an "$f"
