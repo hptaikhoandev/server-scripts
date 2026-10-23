@@ -175,7 +175,7 @@ for p in sys.argv[2:]:
                 if d == 0: break
             j += 1
         s = s[:k] + s[j+1:]
-    if "<?php" not in s:
+    if o.lstrip().startswith("<?php") and "<?php" not in s:
         head = "<?php\n// Add custom Theme Functions here\n" if os.path.basename(p) == "functions.php" else "<?php\n"
         s = head + (s.strip() + "\n" if s.strip() else "")
     if s == o:
